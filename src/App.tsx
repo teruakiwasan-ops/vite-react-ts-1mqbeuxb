@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { initializeApp } from 'firebase/app';
 import { 
   getAuth, 
@@ -36,13 +36,12 @@ import {
   ChevronLeft,
   CheckCircle2,
   History,
-  X
+  X,
+  AlertTriangle
 } from 'lucide-react';
 
 // --- Firebase Initialization ---
-// 【重要】ここを書き換えます！
-// 元のコード: const firebaseConfig = JSON.parse(__firebase_config);
-// ↓ 以下のように、Firebaseコンソールからコピーした内容で上書きしてください
+// 【重要】ご自身のFirebase設定に書き換えてください
 const firebaseConfig = {
   apiKey: "AIzaSyDKPKDSkce5vqZxWUbaFQNxSw4q5IhQKM0",
   authDomain: "voicechat-713d5.firebaseapp.com",
@@ -59,7 +58,7 @@ const db = getFirestore(app);
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
 // --- Gemini API Helper ---
-// 【重要】ここの中身もご自身のGemini APIキーに書き換えてください
+// 【重要】ご自身のGemini APIキーに書き換えてください
 const apiKey = "AIzaSyBkCGSRJLbFzNdARWqSsejUFzYS-ihogEw"; 
 
 const callGemini = async (prompt: string): Promise<string> => {
@@ -108,11 +107,12 @@ interface Message {
   createdAt: number;
 }
 
-// --- Speech Recognition Hook ---
+// --- Speech Recognition Hook (修正版) ---
 const useSpeechRecognition = () => {
   const [text, setText] = useState('');
   const [isListening, setIsListening] = useState(false);
   const recognitionRef = useRef<any>(null);
+  const isListeningRef = useRef(false); // 状態の即時参照用
 
   useEffect(() => {
     if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
@@ -122,12 +122,12 @@ const useSpeechRecognition = () => {
 
     // @ts-ignore
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    recognitionRef.current = new SpeechRecognition();
-    recognitionRef.current.continuous = true;
-    recognitionRef.current.interimResults = true;
-    recognitionRef.current.lang = 'ja-JP';
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = 'ja-JP';
 
-    recognitionRef.current.onresult = (event: any) => {
+    recognition.onresult = (event: any) => {
       let finalTranscript = '';
       let interimTranscript = '';
 
@@ -139,43 +139,68 @@ const useSpeechRecognition = () => {
         }
       }
       if (finalTranscript || interimTranscript) {
-        setText((prev) => {
-            return finalTranscript + interimTranscript; 
+        setText(prev => {
+            return finalTranscript + interimTranscript;
         });
       }
     };
 
-    recognitionRef.current.onend = () => {
-      if (isListening) {
+    recognition.onend = () => {
+      // 意図せず切れた場合に再接続を試みる
+      if (isListeningRef.current) {
+        console.log("Speech recognition ended unexpectedly, restarting...");
         try {
-          recognitionRef.current.start();
+          recognition.start();
         } catch (e) {
+          console.error("Restart failed:", e);
           setIsListening(false);
+          isListeningRef.current = false;
         }
+      } else {
+        setIsListening(false);
       }
     };
+
+    recognition.onerror = (event: any) => {
+      console.error("Speech recognition error", event.error);
+      if (event.error === 'not-allowed') {
+        alert("マイクの使用が許可されていません。ブラウザの設定を確認してください。");
+        setIsListening(false);
+        isListeningRef.current = false;
+      }
+    };
+
+    recognitionRef.current = recognition;
 
     return () => {
       if (recognitionRef.current) {
         recognitionRef.current.stop();
       }
     };
-  }, [isListening]);
+  }, []);
 
-  const toggleListening = () => {
+  const toggleListening = useCallback(() => {
+    if (!recognitionRef.current) {
+        alert("お使いのブラウザは音声認識に対応していない可能性があります。Google Chromeでお試しください。");
+        return;
+    }
+
     if (isListening) {
-      recognitionRef.current?.stop();
+      isListeningRef.current = false;
+      recognitionRef.current.stop();
       setIsListening(false);
     } else {
       try {
-        recognitionRef.current?.start();
+        setText('');
+        isListeningRef.current = true;
+        recognitionRef.current.start();
         setIsListening(true);
-        setText(''); // Start fresh
       } catch (e) {
-        console.error(e);
+        console.error("Start error:", e);
+        isListeningRef.current = false;
       }
     }
-  };
+  }, [isListening]);
 
   return { text, setText, isListening, toggleListening };
 };
@@ -193,7 +218,11 @@ const LoginScreen = ({ setUser }: { setUser: (user: any) => void }) => {
       await signInWithPopup(auth, provider);
     } catch (error: any) {
       console.error("Login failed", error);
-      alert(`ログインエラー: ${error.message}\n※プレビュー環境ではゲストログインをお試しください。`);
+      if (error.code === 'auth/popup-blocked') {
+        alert("ポップアップがブロックされました。設定を確認してください。");
+      } else {
+        alert(`ログインエラー: ${error.message}`);
+      }
     }
   };
 
@@ -209,15 +238,15 @@ const LoginScreen = ({ setUser }: { setUser: (user: any) => void }) => {
         displayName: guestName
       });
       setUser({ ...result.user, displayName: guestName });
-    } catch (error) {
+    } catch (error: any) {
       console.error("Guest login failed", error);
-      alert("ゲストログインに失敗しました。");
+      alert(`ログイン失敗: ${error.message}`);
       setIsLoggingIn(false);
     }
   };
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 p-4 font-sans text-white">
+    <div className="flex flex-col items-center justify-center min-h-[100dvh] bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 p-4 font-sans text-white">
       <div className="bg-white/90 backdrop-blur-md p-8 rounded-3xl shadow-2xl max-w-md w-full text-center text-slate-800 animate-fade-in">
         <div className="bg-indigo-100 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6">
           <MessageSquare size={40} className="text-indigo-600" />
@@ -266,7 +295,7 @@ const LoginScreen = ({ setUser }: { setUser: (user: any) => void }) => {
 
 // 1. Role Selection Screen
 const RoleSelector = ({ onSelect, user }: { onSelect: (role: Role) => void, user: any }) => (
-  <div className="flex flex-col items-center justify-center min-h-screen bg-slate-50 p-4 font-sans relative overflow-hidden">
+  <div className="flex flex-col items-center justify-center min-h-[100dvh] bg-slate-50 p-4 font-sans relative overflow-hidden">
     <div className="absolute top-0 left-0 w-full h-64 bg-gradient-to-b from-indigo-600 to-slate-50 rounded-b-[3rem] shadow-lg z-0"></div>
 
     <div className="absolute top-4 right-4 flex items-center gap-3 z-10">
@@ -334,6 +363,7 @@ const SenderScreen = ({ user, collectionName, onBack }: { user: any, collectionN
   const [inputText, setInputText] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [isRefining, setIsRefining] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -362,8 +392,14 @@ const SenderScreen = ({ user, collectionName, onBack }: { user: any, collectionN
       });
       msgs.sort((a, b) => a.createdAt - b.createdAt);
       setMessages(msgs);
+      setErrorMsg(null);
     }, (error) => {
       console.error("Error fetching messages:", error);
+      if (error.code === 'permission-denied') {
+        setErrorMsg("通信エラー: 権限がありません。Firestoreのルール設定を確認してください。");
+      } else {
+        setErrorMsg(`通信エラー: ${error.message}`);
+      }
     });
 
     return () => unsubscribe();
@@ -390,8 +426,9 @@ const SenderScreen = ({ user, collectionName, onBack }: { user: any, collectionN
       });
       setInputText('');
       setRecognizedText(''); 
-    } catch (e) {
+    } catch (e: any) {
       console.error("Error sending:", e);
+      alert(`送信エラー: ${e.message}\nFirestoreの書き込み権限がない可能性があります。`);
     }
   };
 
@@ -423,9 +460,17 @@ const SenderScreen = ({ user, collectionName, onBack }: { user: any, collectionN
   };
 
   return (
-    <div className="flex flex-col h-screen bg-slate-50">
+    <div className="flex flex-col h-[100dvh] bg-slate-100 overflow-hidden">
+      {/* Error Banner */}
+      {errorMsg && (
+        <div className="bg-red-500 text-white px-4 py-2 text-sm text-center flex items-center justify-center gap-2 z-50">
+          <AlertTriangle size={16} />
+          {errorMsg}
+        </div>
+      )}
+
       {/* Header */}
-      <header className="bg-white/80 backdrop-blur-md border-b border-slate-200 px-4 py-3 flex justify-between items-center shadow-sm sticky top-0 z-20">
+      <header className="bg-white/80 backdrop-blur-md border-b border-slate-200 px-4 py-3 flex justify-between items-center shadow-sm shrink-0 z-20">
         <div className="flex items-center gap-3">
           <button onClick={onBack} className="p-2 hover:bg-slate-100 rounded-full transition-colors text-slate-500">
             <ChevronLeft size={24} />
@@ -461,51 +506,49 @@ const SenderScreen = ({ user, collectionName, onBack }: { user: any, collectionN
       </header>
 
       {/* Chat History */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-6 bg-slate-50" style={{backgroundImage: 'radial-gradient(#cbd5e1 1px, transparent 1px)', backgroundSize: '20px 20px'}}>
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.length === 0 ? (
-           <div className="h-full flex flex-col items-center justify-center text-slate-300 gap-4 animate-fade-in">
-             <div className="bg-white p-6 rounded-full shadow-sm">
-               <MessageSquare size={48} className="text-slate-200" />
-             </div>
-             <p className="font-medium">まだメッセージはありません</p>
+           <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-2">
+             <MessageSquare size={48} className="opacity-20" />
+             <p>メッセージ履歴はありません</p>
            </div>
         ) : (
           messages.map((msg) => {
             const isMe = msg.user?.uid === user.uid;
             return (
-              <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'} gap-3 group animate-fade-in`}>
+              <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'} gap-2`}>
+                {/* Avatar for other users */}
                 {!isMe && (
-                   <div className="flex-shrink-0 mt-auto">
+                   <div className="flex-shrink-0 mt-1">
                      {msg.user?.photoURL ? (
-                       <img src={msg.user.photoURL} className="w-8 h-8 rounded-full border border-white shadow-sm" alt="User" />
+                       <img src={msg.user.photoURL} className="w-8 h-8 rounded-full" alt="User" />
                      ) : (
-                       <div className="w-8 h-8 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center text-xs font-bold">
-                         {msg.user?.displayName?.[0] || 'G'}
+                       <div className="w-8 h-8 bg-slate-200 rounded-full flex items-center justify-center">
+                         <User size={14} className="text-slate-500"/>
                        </div>
                      )}
                    </div>
                 )}
                 
-                <div className={`max-w-[80%] flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
-                   {/* 名前表示（自分・他人問わず表示） */}
+                <div className={`max-w-[70%]`}>
                    {msg.user?.displayName && (
-                     <span className={`text-[10px] text-slate-400 mb-1 ${isMe ? 'mr-1' : 'ml-1'}`}>
-                       {msg.user.displayName}
-                     </span>
+                     <div className={`text-[10px] text-slate-400 mb-1 ${isMe ? 'text-right mr-1' : 'ml-1'}`}>
+                        {msg.user.displayName}
+                     </div>
                    )}
                    
-                   <div className={`px-5 py-3 shadow-sm relative ${
+                   <div className={`rounded-2xl px-4 py-3 ${
                     isMe 
-                      ? 'bg-gradient-to-br from-indigo-600 to-indigo-700 text-white rounded-2xl rounded-br-none' 
-                      : 'bg-white text-slate-800 border border-slate-100 rounded-2xl rounded-bl-none'
+                      ? 'bg-blue-600 text-white rounded-br-none' 
+                      : 'bg-white text-slate-800 shadow-sm rounded-bl-none border border-slate-200'
                    }`}>
                     {msg.type === 'emoji' ? (
-                      <span className="text-5xl leading-none p-2 block hover:scale-110 transition-transform">{msg.text}</span>
+                      <span className="text-4xl">{msg.text}</span>
                     ) : (
-                      <p className="whitespace-pre-wrap text-[15px] leading-relaxed">{msg.text}</p>
+                      <p className="whitespace-pre-wrap text-lg">{msg.text}</p>
                     )}
                    </div>
-                   <span className="text-[10px] text-slate-400 mt-1 px-1">
+                   <span className={`text-xs block mt-1 opacity-70 ${isMe ? 'text-right' : 'text-left'}`}>
                     {new Date(msg.createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
                    </span>
                 </div>
@@ -517,7 +560,7 @@ const SenderScreen = ({ user, collectionName, onBack }: { user: any, collectionN
       </div>
 
       {/* Input Area */}
-      <div className="bg-white border-t p-4 md:p-6 shadow-[0_-4px_20px_rgba(0,0,0,0.05)]">
+      <div className="bg-white border-t p-4 md:p-6 shadow-[0_-4px_20px_rgba(0,0,0,0.05)] z-10">
         <div className="max-w-4xl mx-auto flex flex-col gap-4">
           {/* Mic Control */}
           <div className="flex items-center justify-between mb-2">
@@ -575,9 +618,6 @@ const SenderScreen = ({ user, collectionName, onBack }: { user: any, collectionN
               </button>
             </div>
           </div>
-          <div className="text-center text-xs text-slate-400">
-            Shift + Enter で改行 / Enter で送信 / ✨ ボタンでAI文章推敲
-          </div>
         </div>
       </div>
     </div>
@@ -593,6 +633,7 @@ const ReceiverScreen = ({ user, collectionName, onBack }: { user: any, collectio
   const [isGeneratingReplies, setIsGeneratingReplies] = useState(false);
   const [sentFeedback, setSentFeedback] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false); 
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   
   const presetReplies = ["了解しました", "ありがとうございます", "少々お待ちください", "OKです！", "確認します"];
@@ -618,6 +659,7 @@ const ReceiverScreen = ({ user, collectionName, onBack }: { user: any, collectio
       });
       msgs.sort((a, b) => b.createdAt - a.createdAt);
       setMessages(msgs);
+      setErrorMsg(null);
 
       const latestSenderMsg = msgs.find(m => m.role === 'sender');
       if (latestSenderMsg && latestSenderMsg.id !== latestMessage?.id) {
@@ -628,6 +670,11 @@ const ReceiverScreen = ({ user, collectionName, onBack }: { user: any, collectio
       }
     }, (error) => {
       console.error("Error fetching messages:", error);
+      if (error.code === 'permission-denied') {
+        setErrorMsg("通信エラー: 権限がありません。Firestoreのルール設定を確認してください。");
+      } else {
+        setErrorMsg(`通信エラー: ${error.message}`);
+      }
     });
 
     return () => unsubscribe();
@@ -676,13 +723,22 @@ const ReceiverScreen = ({ user, collectionName, onBack }: { user: any, collectio
       setInputText('');
       setSentFeedback(text);
       setTimeout(() => setSentFeedback(null), 3000);
-    } catch (e) {
+    } catch (e: any) {
       console.error("Error replying:", e);
+      alert(`送信エラー: ${e.message}`);
     }
   };
 
   return (
-    <div className="flex flex-col h-screen bg-slate-50 relative">
+    <div className="flex flex-col h-[100dvh] bg-slate-50 relative overflow-hidden">
+       {/* Error Banner */}
+       {errorMsg && (
+        <div className="bg-red-500 text-white px-4 py-2 text-sm text-center flex items-center justify-center gap-2 z-50 absolute top-0 w-full">
+          <AlertTriangle size={16} />
+          {errorMsg}
+        </div>
+       )}
+
        {/* Toast Notification */}
        <div className={`fixed top-20 left-1/2 transform -translate-x-1/2 z-50 transition-all duration-500 pointer-events-none ${sentFeedback ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-4'}`}>
          <div className="bg-slate-800/90 backdrop-blur text-white px-6 py-3 rounded-full shadow-xl flex items-center gap-3">
@@ -694,7 +750,7 @@ const ReceiverScreen = ({ user, collectionName, onBack }: { user: any, collectio
          </div>
        </div>
 
-       <header className="bg-white border-b border-slate-100 px-4 py-3 flex justify-between items-center shadow-sm shrink-0 z-10">
+       <header className="bg-white border-b border-slate-100 px-4 py-3 flex justify-between items-center shadow-sm shrink-0 z-10 h-16">
          <div className="flex items-center gap-3">
             <button onClick={onBack} className="text-slate-500 flex items-center gap-1 text-sm font-medium hover:text-indigo-600 transition-colors">
                 <ChevronLeft size={18}/>
@@ -778,9 +834,9 @@ const ReceiverScreen = ({ user, collectionName, onBack }: { user: any, collectio
                 <div ref={messagesEndRef} />
             </div>
          ) : (
-            <div className="flex-1 flex flex-col items-center justify-center min-h-[40vh]">
+            <div className="flex-1 flex flex-col items-center justify-center h-full">
                 {latestMessage ? (
-                <div className="w-full max-w-2xl animate-float relative z-0">
+                <div className="w-full max-w-2xl animate-float relative z-0 flex flex-col justify-center">
                     <div className="flex items-center justify-center gap-2 mb-4 opacity-80">
                     {latestMessage.user?.photoURL ? (
                         <img src={latestMessage.user.photoURL} className="w-8 h-8 rounded-full shadow-sm" alt="Sender" />
@@ -797,9 +853,9 @@ const ReceiverScreen = ({ user, collectionName, onBack }: { user: any, collectio
                     </span>
                     </div>
                     
-                    <div className="bg-white/80 backdrop-blur-sm rounded-[2.5rem] p-10 shadow-2xl border border-white/50 text-center relative overflow-hidden group">
+                    <div className="bg-white/80 backdrop-blur-sm rounded-[2.5rem] p-6 md:p-10 shadow-2xl border border-white/50 text-center relative overflow-hidden group mx-2">
                     <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400"></div>
-                    <p className="text-4xl md:text-6xl font-bold text-slate-800 leading-snug break-words drop-shadow-sm">
+                    <p className="text-2xl sm:text-4xl md:text-6xl font-bold text-slate-800 leading-snug break-words drop-shadow-sm">
                         {latestMessage.text}
                     </p>
                     </div>
@@ -816,34 +872,33 @@ const ReceiverScreen = ({ user, collectionName, onBack }: { user: any, collectio
          )}
        </main>
 
-       {/* Reply Area */}
-       <div className="bg-white border-t border-slate-100 shadow-[0_-8px_30px_rgba(0,0,0,0.04)] z-10 rounded-t-[2rem]">
-         <div className="max-w-3xl mx-auto pb-6 pt-2">
-            {/* Handle bar */}
-            <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-4 mt-2"></div>
+       {/* Reply Area - Bottom Sheet Style */}
+       <div className="bg-white border-t border-slate-100 shadow-[0_-8px_30px_rgba(0,0,0,0.04)] z-10 rounded-t-[2rem] pb-safe">
+         <div className="max-w-3xl mx-auto pb-4 pt-2">
+            <div className="w-12 h-1.5 bg-slate-200 rounded-full mx-auto mb-2 mt-2"></div>
 
-            <div className="px-4 space-y-5">
+            <div className="px-3 space-y-3">
               {/* 1. AI Reply Suggestions */}
               {latestMessage && (
-                <div className="flex gap-3 overflow-x-auto pb-2 no-scrollbar items-center pl-1">
+                <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar items-center pl-1">
                    <button 
                      onClick={handleGenerateAiReplies}
                      disabled={isGeneratingReplies || aiReplies.length > 0}
-                     className={`flex items-center gap-1 px-4 py-3 rounded-2xl text-sm font-bold shrink-0 transition-all shadow-sm ${
+                     className={`flex items-center gap-1 px-3 py-2 rounded-xl text-xs font-bold shrink-0 transition-all shadow-sm ${
                        aiReplies.length > 0 
                          ? 'bg-purple-50 text-purple-400 cursor-default border border-purple-100' 
-                         : 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white hover:shadow-md hover:scale-105 active:scale-95'
+                         : 'bg-gradient-to-r from-violet-600 to-indigo-600 text-white'
                      }`}
                    >
-                     {isGeneratingReplies ? <span className="animate-spin">✨</span> : <Wand2 size={18} />}
-                     {aiReplies.length > 0 ? '生成完了' : 'AI返信案'}
+                     {isGeneratingReplies ? <span className="animate-spin">✨</span> : <Wand2 size={14} />}
+                     {aiReplies.length > 0 ? '完了' : 'AI返信'}
                    </button>
                    
                    {aiReplies.map((reply, idx) => (
                      <button
                         key={idx}
                         onClick={() => handleReply(reply, 'preset')}
-                        className="shrink-0 px-5 py-3 bg-white border border-purple-100 text-purple-700 rounded-2xl text-sm font-bold hover:bg-purple-50 hover:border-purple-300 shadow-sm transition-all hover:-translate-y-1 animate-fade-in"
+                        className="shrink-0 px-4 py-2 bg-white border border-purple-100 text-purple-700 rounded-xl text-xs font-bold shadow-sm whitespace-nowrap"
                      >
                        ✨ {reply}
                      </button>
@@ -852,12 +907,12 @@ const ReceiverScreen = ({ user, collectionName, onBack }: { user: any, collectio
               )}
 
               {/* 2. Emojis */}
-              <div className="flex justify-between gap-2 overflow-x-auto pb-1 no-scrollbar px-1">
+              <div className="flex justify-between gap-1 overflow-x-auto pb-1 no-scrollbar">
                 {emojis.map((emoji) => (
                   <button
                     key={emoji}
                     onClick={() => handleReply(emoji, 'emoji')}
-                    className="text-4xl hover:scale-125 active:scale-90 transition-transform p-2 hover:bg-slate-50 rounded-xl"
+                    className="text-3xl p-2 hover:bg-slate-50 rounded-xl transition-transform active:scale-90"
                   >
                     {emoji}
                   </button>
@@ -865,12 +920,12 @@ const ReceiverScreen = ({ user, collectionName, onBack }: { user: any, collectio
               </div>
 
               {/* 3. Presets */}
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
                 {presetReplies.map((reply) => (
                   <button
                     key={reply}
                     onClick={() => handleReply(reply, 'preset')}
-                    className="py-4 px-3 bg-slate-50 text-slate-600 font-bold rounded-2xl hover:bg-indigo-50 hover:text-indigo-600 hover:shadow-md transition-all text-sm active:scale-95 border border-transparent hover:border-indigo-100"
+                    className="py-3 px-2 bg-slate-50 text-slate-600 font-bold rounded-xl border border-transparent active:scale-95 text-xs md:text-sm"
                   >
                     {reply}
                   </button>
@@ -878,20 +933,20 @@ const ReceiverScreen = ({ user, collectionName, onBack }: { user: any, collectio
               </div>
 
               {/* 4. Custom Text */}
-              <div className="flex gap-2 pt-2">
+              <div className="flex gap-2 pt-1">
                 <input
                   type="text"
                   value={inputText}
                   onChange={(e) => setInputText(e.target.value)}
-                  placeholder="メッセージを入力..."
-                  className="flex-1 px-5 py-4 rounded-2xl border-2 border-slate-100 bg-slate-50 focus:bg-white focus:border-indigo-400 focus:ring-4 focus:ring-indigo-50/50 outline-none transition-all font-medium text-slate-700 placeholder:text-slate-400"
+                  placeholder="メッセージ..."
+                  className="flex-1 px-4 py-3 rounded-xl border-2 border-slate-100 bg-slate-50 focus:bg-white focus:border-indigo-400 outline-none transition-all text-sm"
                 />
                 <button
                   onClick={() => handleReply(inputText, 'text')}
                   disabled={!inputText.trim()}
-                  className="bg-slate-800 text-white px-6 rounded-2xl font-bold hover:bg-slate-900 disabled:opacity-30 disabled:cursor-not-allowed transition-all shadow-lg active:scale-95"
+                  className="bg-slate-800 text-white px-4 rounded-xl font-bold disabled:opacity-30"
                 >
-                  <Send size={22} />
+                  <Send size={18} />
                 </button>
               </div>
             </div>
@@ -911,9 +966,11 @@ export default function App() {
 
   useEffect(() => {
     const initAuth = async () => {
+      // 既存の認証トークンがある場合はそれを使用（プレビュー環境用）
       if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
         await signInWithCustomToken(auth, __initial_auth_token);
       } 
+      // ローカル開発やデプロイ環境では、ユーザーがログイン操作をするまで待つため、自動サインインはしない
       setIsLoading(false);
     };
     initAuth();
@@ -927,14 +984,13 @@ export default function App() {
 
   if (isLoading) {
     return (
-      <div className="h-screen flex items-center justify-center bg-slate-50">
-        <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600"></div>
+      <div className="h-screen flex items-center justify-center text-slate-500 bg-slate-50">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
       </div>
     );
   }
 
   if (!user) {
-    // setUserを渡してログイン後の状態更新を任せる
     return <LoginScreen setUser={setUser} />;
   }
 
@@ -944,6 +1000,15 @@ export default function App() {
 
   return (
     <>
+      <style>{`
+        .no-scrollbar::-webkit-scrollbar {
+          display: none;
+        }
+        .no-scrollbar {
+          -ms-overflow-style: none;
+          scrollbar-width: none;
+        }
+      `}</style>
       {role === 'sender' ? (
         <SenderScreen user={user} collectionName={collectionName} onBack={() => setRole(null)} />
       ) : (
