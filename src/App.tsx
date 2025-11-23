@@ -5,8 +5,6 @@ import {
   signInAnonymously, 
   onAuthStateChanged,
   signInWithCustomToken,
-  GoogleAuthProvider, 
-  signInWithPopup,    
   signOut,
   updateProfile
 } from 'firebase/auth';
@@ -32,14 +30,14 @@ import {
   Wand2,
   Trash2,
   LogOut, 
-  Chrome,
   ChevronLeft,
   CheckCircle2,
   History,
   X,
   AlertTriangle,
   Volume2,
-  VolumeX
+  VolumeX,
+  ArrowRight
 } from 'lucide-react';
 
 // --- Firebase Initialization ---
@@ -90,8 +88,7 @@ const callGemini = async (prompt: string): Promise<string> => {
   }
 };
 
-// --- Sound & Vibration Helper (Improved) ---
-// 音声コンテキストをグローバルに保持して再利用する（iOS対策）
+// --- Sound & Vibration Helper ---
 let audioCtx: AudioContext | null = null;
 
 const initAudioContext = () => {
@@ -102,7 +99,6 @@ const initAudioContext = () => {
       audioCtx = new AudioContext();
     }
   }
-  // サスペンド状態なら再開を試みる（ユーザー操作が必要）
   if (audioCtx && audioCtx.state === 'suspended') {
     audioCtx.resume().catch(e => console.error("Audio resume failed", e));
   }
@@ -110,16 +106,15 @@ const initAudioContext = () => {
 
 const playNotificationSound = () => {
   try {
-    initAudioContext(); // 再開を試みる
+    initAudioContext();
     if (!audioCtx) return;
 
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
 
     osc.type = 'sine';
-    // "ピコッ" という高い音
-    osc.frequency.setValueAtTime(880, audioCtx.currentTime); // ラ
-    osc.frequency.exponentialRampToValueAtTime(440, audioCtx.currentTime + 0.15); // ラ (1オクターブ下)
+    osc.frequency.setValueAtTime(880, audioCtx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(440, audioCtx.currentTime + 0.15);
     
     gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
     gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.15);
@@ -135,10 +130,9 @@ const playNotificationSound = () => {
 };
 
 const triggerVibration = () => {
-  // iPhoneはWebアプリでのバイブレーションに非対応のため鳴りません
-  // Androidのみ動作します
+  // Androidのみ動作 (iOS WebKit非対応)
   if (typeof navigator !== 'undefined' && navigator.vibrate) {
-    navigator.vibrate([100, 50, 100]); // ブッ・ブッ
+    navigator.vibrate([100, 50, 100]);
   }
 };
 
@@ -206,7 +200,6 @@ const useSpeechRecognition = () => {
 
     recognition.onend = () => {
       if (isListeningRef.current) {
-        console.log("Restarting speech recognition...");
         try {
           recognition.start();
         } catch (e) {
@@ -238,7 +231,6 @@ const useSpeechRecognition = () => {
   }, []);
 
   const toggleListening = useCallback(() => {
-    // マイクON時にオーディオコンテキストも初期化しておく（通知音対策）
     initAudioContext();
 
     if (!recognitionRef.current) {
@@ -268,26 +260,10 @@ const useSpeechRecognition = () => {
 
 // --- Components ---
 
-// 0. Login Screen
+// 0. Login Screen (Simplified)
 const LoginScreen = ({ setUser }: { setUser: (user: any) => void }) => {
   const [guestName, setGuestName] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
-
-  const handleGoogleLogin = async () => {
-    // ログインアクションをトリガーにオーディオを初期化
-    initAudioContext();
-    try {
-      const provider = new GoogleAuthProvider();
-      await signInWithPopup(auth, provider);
-    } catch (error: any) {
-      console.error("Login failed", error);
-      if (error.code === 'auth/popup-blocked') {
-        alert("ポップアップがブロックされました。");
-      } else {
-        alert(`ログインエラー: ${error.message}`);
-      }
-    }
-  };
 
   const handleGuestLogin = async () => {
     // ログインアクションをトリガーにオーディオを初期化
@@ -311,29 +287,32 @@ const LoginScreen = ({ setUser }: { setUser: (user: any) => void }) => {
 
   return (
     <div className="flex flex-col items-center justify-center min-h-[100dvh] bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 p-4 font-sans text-white">
-      <div className="bg-white/90 backdrop-blur-md p-8 rounded-3xl shadow-2xl max-w-md w-full text-center text-slate-800 animate-fade-in">
-        <div className="bg-indigo-100 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6">
+      <div className="bg-white/10 backdrop-blur-lg border border-white/20 p-8 rounded-3xl shadow-2xl max-w-md w-full text-center animate-fade-in">
+        <div className="bg-white w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 shadow-lg">
           <MessageSquare size={40} className="text-indigo-600" />
         </div>
-        <h1 className="text-3xl font-bold mb-2 bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-pink-600">
+        <h1 className="text-3xl font-bold mb-2 text-white drop-shadow-sm">
           Voice Chat
         </h1>
-        <p className="text-slate-500 mb-8 font-medium">声でつながる、AIで伝わる</p>
+        <p className="text-indigo-100 mb-8 font-medium">お名前を入力して始めてください</p>
 
-        <button onClick={handleGoogleLogin} className="w-full flex items-center justify-center gap-3 bg-white border-2 border-slate-100 text-slate-700 px-6 py-4 rounded-2xl font-bold hover:bg-slate-50 hover:border-indigo-200 transition-all shadow-sm mb-6 active:scale-95">
-          <Chrome size={22} className="text-blue-500" />
-          Googleでログイン
-        </button>
-
-        <div className="relative mb-6">
-          <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-slate-200"></div></div>
-          <span className="relative z-10 bg-white/0 px-4 text-sm text-slate-400 bg-white">または名前を入力して開始</span>
-        </div>
-
-        <div className="space-y-3">
-          <input type="text" value={guestName} onChange={(e) => setGuestName(e.target.value)} placeholder="あなたの名前 (例: 佐藤)" className="w-full px-5 py-4 rounded-2xl border-2 border-slate-200 bg-slate-50 focus:bg-white focus:border-indigo-400 focus:ring-4 focus:ring-indigo-50/50 outline-none transition-all text-slate-700 placeholder:text-slate-400 text-center font-bold" onKeyDown={(e) => e.key === 'Enter' && handleGuestLogin()}/>
-          <button onClick={handleGuestLogin} disabled={isLoggingIn} className="w-full bg-slate-800 text-white px-6 py-4 rounded-2xl font-bold hover:bg-slate-900 transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed">
-            {isLoggingIn ? '準備中...' : 'ゲストとして参加'}
+        <div className="space-y-4">
+          <div className="relative">
+            <input 
+              type="text" 
+              value={guestName}
+              onChange={(e) => setGuestName(e.target.value)}
+              placeholder="名前 (例: 佐藤)"
+              className="w-full px-6 py-4 rounded-2xl border-2 border-transparent bg-white/90 focus:bg-white focus:border-white text-slate-800 placeholder:text-slate-400 text-center font-bold text-lg outline-none transition-all shadow-inner"
+              onKeyDown={(e) => e.key === 'Enter' && handleGuestLogin()}
+            />
+          </div>
+          <button
+            onClick={handleGuestLogin}
+            disabled={isLoggingIn}
+            className="w-full bg-indigo-600 text-white px-6 py-4 rounded-2xl font-bold text-lg hover:bg-indigo-700 transition-all active:scale-95 disabled:opacity-70 disabled:cursor-not-allowed shadow-lg flex items-center justify-center gap-2"
+          >
+            {isLoggingIn ? '準備中...' : <>参加する <ArrowRight size={20} /></>}
           </button>
         </div>
       </div>
@@ -347,7 +326,7 @@ const RoleSelector = ({ onSelect, user }: { onSelect: (role: Role) => void, user
     <div className="absolute top-0 left-0 w-full h-64 bg-gradient-to-b from-indigo-600 to-slate-50 rounded-b-[3rem] shadow-lg z-0"></div>
     <div className="absolute top-4 right-4 flex items-center gap-3 z-10">
        <div className="flex items-center gap-2 bg-white/90 backdrop-blur px-4 py-2 rounded-full shadow-md">
-         {user.photoURL ? <img src={user.photoURL} alt="user" className="w-8 h-8 rounded-full border-2 border-indigo-100" /> : <div className="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600 font-bold">{user.displayName ? user.displayName[0] : <User size={18}/>}</div>}
+         <div className="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600 font-bold">{user.displayName ? user.displayName[0] : <User size={18}/>}</div>
          <span className="text-sm font-bold text-slate-700">{user.displayName || 'ゲスト'}</span>
        </div>
        <button onClick={() => signOut(auth)} className="p-3 bg-white/90 backdrop-blur rounded-full text-slate-400 hover:text-red-500 hover:bg-red-50 transition-all shadow-md" title="ログアウト"><LogOut size={20} /></button>
@@ -448,19 +427,16 @@ const SenderScreen = ({ user, collectionName, onBack }: { user: any, collectionN
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // 音声テスト用関数
   const toggleSound = () => {
     const newState = !soundEnabled;
     setSoundEnabled(newState);
     if (newState) {
-      // 有効化した瞬間に一度鳴らしてブラウザのブロックを解除する
       playNotificationSound();
     }
   };
 
   const handleSend = async () => {
     if (!inputText.trim()) return;
-    // 送信ボタンもユーザーインタラクションなのでオーディオ再開のチャンス
     initAudioContext();
     try {
       await addDoc(collection(db, 'artifacts', appId, 'public', 'data', collectionName), {
@@ -520,11 +496,9 @@ const SenderScreen = ({ user, collectionName, onBack }: { user: any, collectionN
           <h2 className="font-bold text-lg text-slate-800 flex items-center gap-2"><span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>送信画面</h2>
         </div>
         <div className="flex items-center gap-3">
-          {/* 通知音トグルボタン（押すと音が鳴る） */}
           <button onClick={toggleSound} className={`p-2 rounded-full transition-all ${soundEnabled ? 'text-slate-600 hover:bg-slate-100' : 'text-slate-300 hover:text-slate-500'}`}>
             {soundEnabled ? <Volume2 size={20}/> : <VolumeX size={20}/>}
           </button>
-          
           <button onClick={handleClearHistory} className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-full transition-all" title="履歴を全削除"><Trash2 size={20} /></button>
           <div className="flex items-center gap-2">
             <span className="text-xs font-bold text-indigo-600 bg-indigo-50 px-2 py-1 rounded-full hidden md:inline-block">{user.displayName}</span>
@@ -541,7 +515,7 @@ const SenderScreen = ({ user, collectionName, onBack }: { user: any, collectionN
             const isMe = msg.user?.uid === user.uid;
             return (
               <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'} gap-2`}>
-                {!isMe && <div className="flex-shrink-0 mt-1">{msg.user?.photoURL ? <img src={msg.user.photoURL} className="w-8 h-8 rounded-full" alt="User" /> : <div className="w-8 h-8 bg-slate-200 rounded-full flex items-center justify-center"><User size={14} className="text-slate-500"/></div>}</div>}
+                {!isMe && <div className="flex-shrink-0 mt-1"><div className="w-8 h-8 bg-slate-200 rounded-full flex items-center justify-center"><User size={14} className="text-slate-500"/></div></div>}
                 <div className={`max-w-[70%]`}>
                    {msg.user?.displayName && <div className={`text-[10px] text-slate-400 mb-1 ${isMe ? 'text-right mr-1' : 'ml-1'}`}>{msg.user.displayName}</div>}
                    <div className={`rounded-2xl px-4 py-3 ${isMe ? 'bg-blue-600 text-white rounded-br-none' : 'bg-white text-slate-800 shadow-sm rounded-bl-none border border-slate-200'}`}>
@@ -665,12 +639,10 @@ const ReceiverScreen = ({ user, collectionName, onBack }: { user: any, collectio
     }
   }, [showHistory, messages]);
 
-  // 音声テスト用関数
   const toggleSound = () => {
     const newState = !soundEnabled;
     setSoundEnabled(newState);
     if (newState) {
-      // 有効化した瞬間に一度鳴らしてブラウザのブロックを解除する
       playNotificationSound();
     }
   };
@@ -697,7 +669,7 @@ const ReceiverScreen = ({ user, collectionName, onBack }: { user: any, collectio
 
   const handleReply = async (text: string, type: 'text' | 'emoji' | 'preset') => {
     try {
-      initAudioContext(); // 送信操作もインタラクションなので再開チャンス
+      initAudioContext();
       await addDoc(collection(db, 'artifacts', appId, 'public', 'data', collectionName), {
         text: text,
         role: 'receiver',
@@ -730,14 +702,12 @@ const ReceiverScreen = ({ user, collectionName, onBack }: { user: any, collectio
          <div className="flex items-center gap-3">
             <button onClick={onBack} className="text-slate-500 flex items-center gap-1 text-sm font-medium hover:text-indigo-600 transition-colors"><ChevronLeft size={18}/></button>
             <button onClick={() => setShowHistory(!showHistory)} className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold transition-all ${showHistory ? 'bg-slate-800 text-white shadow-md' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'}`}>{showHistory ? <X size={14}/> : <History size={14}/>}{showHistory ? '閉じる' : '履歴'}</button>
-            
-            {/* 通知音トグルボタン（押すと音が鳴る） */}
             <button onClick={toggleSound} className={`p-2 rounded-full transition-all ${soundEnabled ? 'text-slate-600 hover:bg-slate-100' : 'text-slate-300 hover:text-slate-500'}`}>
               {soundEnabled ? <Volume2 size={18}/> : <VolumeX size={18}/>}
             </button>
          </div>
          <div className="flex items-center gap-2 bg-slate-100 px-3 py-1 rounded-full">
-             <div className="flex items-center gap-2"><span className="text-xs font-bold text-indigo-600 hidden md:inline-block">{user.displayName}</span>{user.photoURL ? <img src={user.photoURL} alt="me" className="w-6 h-6 rounded-full" /> : <div className="w-6 h-6 bg-indigo-200 rounded-full flex items-center justify-center text-[10px] font-bold text-indigo-700">{user.displayName ? user.displayName[0] : 'G'}</div>}</div>
+             <div className="flex items-center gap-2"><span className="text-xs font-bold text-indigo-600 hidden md:inline-block">{user.displayName}</span><div className="w-6 h-6 bg-indigo-200 rounded-full flex items-center justify-center text-[10px] font-bold text-indigo-700">{user.displayName ? user.displayName[0] : 'G'}</div></div>
          </div>
        </header>
 
@@ -748,7 +718,7 @@ const ReceiverScreen = ({ user, collectionName, onBack }: { user: any, collectio
                     const isMe = msg.user?.uid === user.uid;
                     return (
                     <div key={msg.id} className={`flex ${isMe ? 'justify-end' : 'justify-start'} gap-3`}>
-                        {!isMe && <div className="flex-shrink-0 mt-auto">{msg.user?.photoURL ? <img src={msg.user.photoURL} className="w-8 h-8 rounded-full shadow-sm" alt="User" /> : <div className="w-8 h-8 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center text-xs font-bold">{msg.user?.displayName?.[0] || 'G'}</div>}</div>}
+                        {!isMe && <div className="flex-shrink-0 mt-auto"><div className="w-8 h-8 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center text-xs font-bold">{msg.user?.displayName?.[0] || 'G'}</div></div>}
                         <div className={`max-w-[80%] flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
                             {msg.user?.displayName && <span className={`text-[10px] text-slate-400 mb-1 ${isMe ? 'mr-1' : 'ml-1'}`}>{msg.user.displayName}</span>}
                             <div className={`px-4 py-2 shadow-sm relative text-sm ${isMe ? 'bg-indigo-600 text-white rounded-2xl rounded-br-none' : 'bg-white text-slate-800 border border-slate-100 rounded-2xl rounded-bl-none'}`}>{msg.type === 'emoji' ? <span className="text-3xl block p-1">{msg.text}</span> : <p className="whitespace-pre-wrap">{msg.text}</p>}</div>
@@ -764,7 +734,7 @@ const ReceiverScreen = ({ user, collectionName, onBack }: { user: any, collectio
                 {latestMessage ? (
                 <div className="w-full max-w-2xl animate-float relative z-0 flex flex-col justify-center">
                     <div className="flex items-center justify-center gap-2 mb-4 opacity-80">
-                    {latestMessage.user?.photoURL ? <img src={latestMessage.user.photoURL} className="w-8 h-8 rounded-full shadow-sm" alt="Sender" /> : <div className="w-8 h-8 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center text-xs font-bold">{latestMessage.user?.displayName?.[0] || 'S'}</div>}
+                    <div className="w-8 h-8 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center text-xs font-bold">{latestMessage.user?.displayName?.[0] || 'S'}</div>
                     <span className="text-sm font-bold text-slate-600">{latestMessage.user?.displayName || '送信者'}</span>
                     <span className="text-xs text-slate-400 bg-white px-2 py-1 rounded-full shadow-sm">{new Date(latestMessage.createdAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span>
                     </div>
