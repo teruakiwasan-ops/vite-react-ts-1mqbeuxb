@@ -38,8 +38,8 @@ import {
   History,
   X,
   AlertTriangle,
-  Volume2, // 音量アイコン追加
-  VolumeX  // ミュートアイコン追加
+  Volume2,
+  VolumeX
 } from 'lucide-react';
 
 // --- Firebase Initialization ---
@@ -90,42 +90,55 @@ const callGemini = async (prompt: string): Promise<string> => {
   }
 };
 
-// --- Sound & Vibration Helper ---
-// ファイル不要で「ピコッ」という音を鳴らす関数
-const playNotificationSound = () => {
-  try {
+// --- Sound & Vibration Helper (Improved) ---
+// 音声コンテキストをグローバルに保持して再利用する（iOS対策）
+let audioCtx: AudioContext | null = null;
+
+const initAudioContext = () => {
+  if (!audioCtx) {
     // @ts-ignore
     const AudioContext = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContext) return;
+    if (AudioContext) {
+      audioCtx = new AudioContext();
+    }
+  }
+  // サスペンド状態なら再開を試みる（ユーザー操作が必要）
+  if (audioCtx && audioCtx.state === 'suspended') {
+    audioCtx.resume().catch(e => console.error("Audio resume failed", e));
+  }
+};
 
-    const ctx = new AudioContext();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
+const playNotificationSound = () => {
+  try {
+    initAudioContext(); // 再開を試みる
+    if (!audioCtx) return;
 
-    // 音色の設定（サイン波：柔らかい音）
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+
     osc.type = 'sine';
-    // 音程の設定（880Hz "ラ" から 440Hz "ラ" へ下がる音）
-    osc.frequency.setValueAtTime(880, ctx.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.1);
+    // "ピコッ" という高い音
+    osc.frequency.setValueAtTime(880, audioCtx.currentTime); // ラ
+    osc.frequency.exponentialRampToValueAtTime(440, audioCtx.currentTime + 0.15); // ラ (1オクターブ下)
     
-    // 音量の設定（フェードアウト）
-    gain.gain.setValueAtTime(0.1, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.1);
+    gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.15);
 
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(audioCtx.destination);
 
     osc.start();
-    osc.stop(ctx.currentTime + 0.1);
+    osc.stop(audioCtx.currentTime + 0.15);
   } catch (e) {
     console.error("Sound play failed", e);
   }
 };
 
 const triggerVibration = () => {
-  // Android端末などでバイブレーション（200ミリ秒）
+  // iPhoneはWebアプリでのバイブレーションに非対応のため鳴りません
+  // Androidのみ動作します
   if (typeof navigator !== 'undefined' && navigator.vibrate) {
-    navigator.vibrate(200);
+    navigator.vibrate([100, 50, 100]); // ブッ・ブッ
   }
 };
 
@@ -225,6 +238,9 @@ const useSpeechRecognition = () => {
   }, []);
 
   const toggleListening = useCallback(() => {
+    // マイクON時にオーディオコンテキストも初期化しておく（通知音対策）
+    initAudioContext();
+
     if (!recognitionRef.current) {
         alert("このブラウザは音声認識に対応していません。Chrome推奨です。");
         return;
@@ -258,6 +274,8 @@ const LoginScreen = ({ setUser }: { setUser: (user: any) => void }) => {
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
   const handleGoogleLogin = async () => {
+    // ログインアクションをトリガーにオーディオを初期化
+    initAudioContext();
     try {
       const provider = new GoogleAuthProvider();
       await signInWithPopup(auth, provider);
@@ -272,6 +290,9 @@ const LoginScreen = ({ setUser }: { setUser: (user: any) => void }) => {
   };
 
   const handleGuestLogin = async () => {
+    // ログインアクションをトリガーにオーディオを初期化
+    initAudioContext();
+    
     if (!guestName.trim()) {
       alert("名前を入力してください");
       return;
@@ -335,13 +356,13 @@ const RoleSelector = ({ onSelect, user }: { onSelect: (role: Role) => void, user
       <h1 className="text-4xl font-bold text-white mb-2 text-center drop-shadow-md">ようこそ、{user.displayName || 'ゲスト'}さん</h1>
       <p className="text-indigo-100 mb-12 font-medium">役割を選択してください</p>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-8 w-full">
-        <button onClick={() => onSelect('sender')} className="flex flex-col items-center p-8 bg-white rounded-3xl shadow-xl hover:shadow-2xl transition-all hover:-translate-y-2 group relative overflow-hidden">
+        <button onClick={() => { initAudioContext(); onSelect('sender'); }} className="flex flex-col items-center p-8 bg-white rounded-3xl shadow-xl hover:shadow-2xl transition-all hover:-translate-y-2 group relative overflow-hidden">
           <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-blue-500 to-cyan-500"></div>
           <div className="p-6 bg-blue-50 rounded-full mb-6 group-hover:bg-blue-100 transition-colors ring-8 ring-blue-50/50"><User size={48} className="text-blue-600" /></div>
           <h2 className="text-2xl font-bold text-slate-800 mb-2">送信側 (PC)</h2>
           <p className="text-slate-500 text-center leading-relaxed">マイク入力とAI推敲で<br/>快適にメッセージを作成</p>
         </button>
-        <button onClick={() => onSelect('receiver')} className="flex flex-col items-center p-8 bg-white rounded-3xl shadow-xl hover:shadow-2xl transition-all hover:-translate-y-2 group relative overflow-hidden">
+        <button onClick={() => { initAudioContext(); onSelect('receiver'); }} className="flex flex-col items-center p-8 bg-white rounded-3xl shadow-xl hover:shadow-2xl transition-all hover:-translate-y-2 group relative overflow-hidden">
           <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-emerald-500 to-green-500"></div>
           <div className="p-6 bg-emerald-50 rounded-full mb-6 group-hover:bg-emerald-100 transition-colors ring-8 ring-emerald-50/50"><Smartphone size={48} className="text-emerald-600" /></div>
           <h2 className="text-2xl font-bold text-slate-800 mb-2">受信側 (スマホ)</h2>
@@ -359,9 +380,9 @@ const SenderScreen = ({ user, collectionName, onBack }: { user: any, collectionN
   const [messages, setMessages] = useState<Message[]>([]);
   const [isRefining, setIsRefining] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [soundEnabled, setSoundEnabled] = useState(true); // 通知音設定
+  const [soundEnabled, setSoundEnabled] = useState(true); 
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const isInitialMount = useRef(true); // 初回マウント判定用
+  const isInitialMount = useRef(true);
 
   useEffect(() => {
     if (recognizedText) {
@@ -390,11 +411,10 @@ const SenderScreen = ({ user, collectionName, onBack }: { user: any, collectionN
         });
       });
 
-      // 新着チェック（docChangesを使用）
+      // 新着チェック
       snapshot.docChanges().forEach((change) => {
         if (change.type === 'added') {
           const data = change.doc.data();
-          // 自分が送信者でない、かつ初回読み込みでない場合に通知
           if (data.user?.uid !== user.uid && !isInitialMount.current) {
             hasNewMessageFromOthers = true;
           }
@@ -405,7 +425,6 @@ const SenderScreen = ({ user, collectionName, onBack }: { user: any, collectionN
         notifyUser();
       }
 
-      // 初回読み込み完了フラグを折る
       if (isInitialMount.current) {
         isInitialMount.current = false;
       }
@@ -429,8 +448,20 @@ const SenderScreen = ({ user, collectionName, onBack }: { user: any, collectionN
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // 音声テスト用関数
+  const toggleSound = () => {
+    const newState = !soundEnabled;
+    setSoundEnabled(newState);
+    if (newState) {
+      // 有効化した瞬間に一度鳴らしてブラウザのブロックを解除する
+      playNotificationSound();
+    }
+  };
+
   const handleSend = async () => {
     if (!inputText.trim()) return;
+    // 送信ボタンもユーザーインタラクションなのでオーディオ再開のチャンス
+    initAudioContext();
     try {
       await addDoc(collection(db, 'artifacts', appId, 'public', 'data', collectionName), {
         text: inputText,
@@ -489,8 +520,8 @@ const SenderScreen = ({ user, collectionName, onBack }: { user: any, collectionN
           <h2 className="font-bold text-lg text-slate-800 flex items-center gap-2"><span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>送信画面</h2>
         </div>
         <div className="flex items-center gap-3">
-          {/* 通知音トグルボタン */}
-          <button onClick={() => setSoundEnabled(!soundEnabled)} className={`p-2 rounded-full transition-all ${soundEnabled ? 'text-slate-600 hover:bg-slate-100' : 'text-slate-300 hover:text-slate-500'}`}>
+          {/* 通知音トグルボタン（押すと音が鳴る） */}
+          <button onClick={toggleSound} className={`p-2 rounded-full transition-all ${soundEnabled ? 'text-slate-600 hover:bg-slate-100' : 'text-slate-300 hover:text-slate-500'}`}>
             {soundEnabled ? <Volume2 size={20}/> : <VolumeX size={20}/>}
           </button>
           
@@ -588,7 +619,6 @@ const ReceiverScreen = ({ user, collectionName, onBack }: { user: any, collectio
         });
       });
 
-      // 新着チェック
       snapshot.docChanges().forEach((change) => {
         if (change.type === 'added') {
           const data = change.doc.data();
@@ -635,6 +665,16 @@ const ReceiverScreen = ({ user, collectionName, onBack }: { user: any, collectio
     }
   }, [showHistory, messages]);
 
+  // 音声テスト用関数
+  const toggleSound = () => {
+    const newState = !soundEnabled;
+    setSoundEnabled(newState);
+    if (newState) {
+      // 有効化した瞬間に一度鳴らしてブラウザのブロックを解除する
+      playNotificationSound();
+    }
+  };
+
   const handleGenerateAiReplies = async () => {
     if (!latestMessage || isGeneratingReplies) return;
     setIsGeneratingReplies(true);
@@ -657,6 +697,7 @@ const ReceiverScreen = ({ user, collectionName, onBack }: { user: any, collectio
 
   const handleReply = async (text: string, type: 'text' | 'emoji' | 'preset') => {
     try {
+      initAudioContext(); // 送信操作もインタラクションなので再開チャンス
       await addDoc(collection(db, 'artifacts', appId, 'public', 'data', collectionName), {
         text: text,
         role: 'receiver',
@@ -690,8 +731,8 @@ const ReceiverScreen = ({ user, collectionName, onBack }: { user: any, collectio
             <button onClick={onBack} className="text-slate-500 flex items-center gap-1 text-sm font-medium hover:text-indigo-600 transition-colors"><ChevronLeft size={18}/></button>
             <button onClick={() => setShowHistory(!showHistory)} className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-bold transition-all ${showHistory ? 'bg-slate-800 text-white shadow-md' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'}`}>{showHistory ? <X size={14}/> : <History size={14}/>}{showHistory ? '閉じる' : '履歴'}</button>
             
-            {/* 通知音トグルボタン */}
-            <button onClick={() => setSoundEnabled(!soundEnabled)} className={`p-2 rounded-full transition-all ${soundEnabled ? 'text-slate-600 hover:bg-slate-100' : 'text-slate-300 hover:text-slate-500'}`}>
+            {/* 通知音トグルボタン（押すと音が鳴る） */}
+            <button onClick={toggleSound} className={`p-2 rounded-full transition-all ${soundEnabled ? 'text-slate-600 hover:bg-slate-100' : 'text-slate-300 hover:text-slate-500'}`}>
               {soundEnabled ? <Volume2 size={18}/> : <VolumeX size={18}/>}
             </button>
          </div>
